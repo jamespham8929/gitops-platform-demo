@@ -1,0 +1,41 @@
+name: Promote to production
+
+on:
+  workflow_dispatch:
+    inputs:
+      image_tag:
+        description: "Image tag to promote to production"
+        required: true
+        type: string
+
+jobs:
+  promote:
+    name: Promote ${{ github.event.inputs.image_tag }} to production
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+      pull-requests: write
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          token: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Update production values file
+        run: |
+          sed -i "s/tag:.*/tag: \"${{ github.event.inputs.image_tag }}\"/" \
+            charts/sample-service/values-production.yaml
+
+      - name: Create pull request
+        uses: peter-evans/create-pull-request@v6
+        with:
+          token: ${{ secrets.GITHUB_TOKEN }}
+          branch: promote/${{ github.event.inputs.image_tag }}
+          title: "chore: promote ${{ github.event.inputs.image_tag }} to production"
+          body: |
+            Promotes image tag `${{ github.event.inputs.image_tag }}` to production.
+
+            **Staging verification:** Check ArgoCD staging sync status before merging.
+
+            **To deploy:** Merge this PR. ArgoCD will detect the values change and sync production.
+          labels: promotion
+          delete-branch: true
