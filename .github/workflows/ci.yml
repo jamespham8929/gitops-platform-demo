@@ -29,6 +29,18 @@ jobs:
           cache: true
       - name: Run tests
         run: go test ./... -v -race -coverprofile=coverage.out
+      - name: Enforce coverage threshold
+        env:
+          THRESHOLD: "50"
+        run: |
+          total=$(go tool cover -func=coverage.out | awk '/^total:/ {print $3}' | tr -d '%')
+          echo "Total coverage: ${total}% (threshold ${THRESHOLD}%)"
+          if awk -v t="$total" -v min="$THRESHOLD" 'BEGIN { exit (t < min) ? 1 : 0 }'; then
+            echo "Coverage check passed"
+          else
+            echo "Coverage ${total}% is below the ${THRESHOLD}% threshold"
+            exit 1
+          fi
       - name: Upload coverage
         uses: codecov/codecov-action@v4
         with:
