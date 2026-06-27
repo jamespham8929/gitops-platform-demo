@@ -5,10 +5,12 @@ on:
     branches: [main]
     paths:
       - "apps/sample-service/**"
+      - "charts/sample-service/**"
   pull_request:
     branches: [main]
     paths:
       - "apps/sample-service/**"
+      - "charts/sample-service/**"
 
 env:
   REGISTRY: ghcr.io
@@ -57,6 +59,19 @@ jobs:
       - uses: golangci/golangci-lint-action@v4
         with:
           working-directory: apps/sample-service/src
+
+  helm:
+    name: Helm chart
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: azure/setup-helm@v4
+        with:
+          version: v3.14.4
+      - name: Lint chart
+        run: helm lint charts/sample-service
+      - name: Smoke render templates
+        run: helm template sample-service charts/sample-service > /dev/null
 
   build-and-push:
     name: Build and push image
