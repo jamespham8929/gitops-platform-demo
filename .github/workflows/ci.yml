@@ -72,6 +72,17 @@ jobs:
         run: helm lint charts/sample-service
       - name: Smoke render templates
         run: helm template sample-service charts/sample-service > /dev/null
+      - name: Install kubeconform
+        run: |
+          curl -sSL -o kubeconform.tar.gz \
+            https://github.com/yannh/kubeconform/releases/download/v0.6.7/kubeconform-linux-amd64.tar.gz
+          tar xzf kubeconform.tar.gz kubeconform
+          sudo install kubeconform /usr/local/bin/
+      - name: Validate rendered manifests against Kubernetes schema
+        run: |
+          helm template sample-service charts/sample-service \
+            | kubeconform -strict -summary -verbose \
+                -kubernetes-version 1.29.0 -schema-location default
 
   build-and-push:
     name: Build and push image
