@@ -83,6 +83,16 @@ jobs:
           helm template sample-service charts/sample-service \
             | kubeconform -strict -summary -verbose \
                 -kubernetes-version 1.29.0 -schema-location default
+      - name: Validate environment overlays against Kubernetes schema
+        run: |
+          for env in staging production; do
+            echo "Validating $env overlay"
+            helm template sample-service charts/sample-service \
+              -f charts/sample-service/values.yaml \
+              -f charts/sample-service/values-$env.yaml \
+              | kubeconform -strict -summary \
+                  -kubernetes-version 1.29.0 -schema-location default
+          done
 
   build-and-push:
     name: Build and push image

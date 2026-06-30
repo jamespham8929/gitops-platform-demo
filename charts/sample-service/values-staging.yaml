@@ -1,0 +1,26 @@
+# Staging overlay, layered on top of values.yaml by the ArgoCD staging Application.
+# Staging auto-syncs on every push to main.
+
+image:
+  # Updated automatically by .github/workflows/ci.yml after a successful build.
+  tag: "a1b2c3d"
+
+replicaCount: 1
+
+ingress:
+  hosts:
+    - host: sample-service.staging.example.com
+      paths:
+        - path: /
+          pathType: Prefix
+  tls:
+    - secretName: sample-service-staging-tls
+      hosts:
+        - sample-service.staging.example.com
+
+# Staging runs a single replica with autoscaling off to keep the cluster small.
+autoscaling:
+  enabled: false
+
+podDisruptionBudget:
+  enabled: false

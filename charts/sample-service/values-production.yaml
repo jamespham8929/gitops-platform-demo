@@ -1,0 +1,33 @@
+# Production overlay, layered on top of values.yaml by the ArgoCD production Application.
+# The image tag is bumped only through a promotion PR, never automatically.
+
+image:
+  # Updated by .github/workflows/promote.yml, which opens a PR for review.
+  tag: "9f8e7d6"
+
+replicaCount: 3
+
+ingress:
+  hosts:
+    - host: sample-service.example.com
+      paths:
+        - path: /
+          pathType: Prefix
+  tls:
+    - secretName: sample-service-tls
+      hosts:
+        - sample-service.example.com
+
+autoscaling:
+  enabled: true
+  minReplicas: 3
+  maxReplicas: 20
+  targetCPUUtilizationPercentage: 70
+
+resources:
+  requests:
+    cpu: 200m
+    memory: 128Mi
+  limits:
+    cpu: "1"
+    memory: 256Mi
