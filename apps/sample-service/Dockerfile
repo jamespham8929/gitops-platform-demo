@@ -5,7 +5,10 @@ COPY src/go.mod src/go.sum ./
 RUN go mod download
 
 COPY src/ .
-RUN CGO_ENABLED=0 GOOS=linux go build -ldflags="-s -w -X main.version=${APP_VERSION}" -o /app .
+# The build is static so it can run on distroless. The version string comes from
+# APP_VERSION at runtime, set by the chart from the image tag, which keeps the
+# image content identical for a given commit no matter what it is tagged.
+RUN CGO_ENABLED=0 GOOS=linux go build -trimpath -ldflags="-s -w" -o /app .
 
 FROM gcr.io/distroless/static-debian12:nonroot
 
