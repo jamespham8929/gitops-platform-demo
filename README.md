@@ -1,90 +1,186 @@
 # gitops-platform-demo
 
-A reference GitOps setup demonstrating a complete deployment pipeline from code commit to production. Uses GitHub Actions for CI, Helm for packaging, and ArgoCD for continuous delivery across staging and production clusters.
+A GitOps delivery pipeline where the deploy decides for itself whether to
+finish. GitHub Actions builds and verifies, ArgoCD reconciles git to the
+cluster, and Argo Rollouts shifts traffic in steps while a Prometheus query
+watches the new version. A build that starts cleanly and then misbehaves stops
+at 5% of production traffic and rolls back on its own.
 
-## Architecture
+## The delivery path
 
 ```
-Developer push → GitHub Actions CI →  build + test + scan image
-                                   →  push image to registry
-                                   →  update Helm values with new tag
-ArgoCD watches repo → detects values change → syncs to cluster
+push to main
+  │
+  ├─ CI: test, lint, smoke the binary, build, scan, sign
+  ├─ CI writes the tag into values-staging.yaml
+  │
+  ▼
+ArgoCD auto-syncs staging ──► canary at 25% ──► analysis ──► 100%
+  │                                              │
+  │                                              └─ fails ──► abort, stable keeps serving
+  ▼
+promotion PR bumps values-production.yaml   ← the human gate
+  │
+  ▼
+operator approves the production sync
+  │
+  ▼
+canary 5% ─► 20% ─► 50% ─► pause
+  │            │        │
+  │            │        └─ post-promotion smoke gate ──► promote or abort
+  └────────────┴─ background analysis, aborts at any step
 ```
 
-Environment promotion is gated: staging auto-syncs on every push to `main`, production requires a manual PR to bump the image tag in `charts/sample-service/values-production.yaml`.
+Three gates, and only one of them is a person. The PR decides whether a change
+should ship now. Everything after that is decided by measurements. The reasoning
+is in [ADR 0003](docs/adr/0003-promotion-strategy.md).
+
+## What makes the canary self-cancelling
+
+The Rollout runs a background AnalysisRun from the first traffic step. It
+queries Prometheus on an interval and aborts on a breach:
+
+```promql
+sum(rate(http_requests_total{service="sample-service-canary",namespace="production",status!~"5.."}[2m]))
+/
+sum(rate(http_requests_total{service="sample-service-canary",namespace="production"}[2m]))
+```
+
+Argo Rollouts pins the canary service's selector to the canary pods, and
+prometheus-operator stamps a `service` label on samples it scrapes through a
+service, so that one label isolates canary traffic without any pod-hash
+relabeling. Production thresholds are 99% success and 400ms at p95. Staging runs
+the same machinery on a shorter clock with looser thresholds, so the query is
+exercised before production depends on it.
+
+CI checks that the metric names the analysis queries are the ones the service
+exports. A gate reading a metric that no longer exists returns no data, and no
+data is treated as no evidence rather than as failure, so a silent rename would
+otherwise turn the gate off.
+
+[docs/canary-rollback.md](docs/canary-rollback.md) walks through reproducing an
+automated rollback on kind, and
+[ADR 0002](docs/adr/0002-progressive-delivery-with-argo-rollouts.md) covers why
+canary rather than blue-green or alerting.
+
+## The service
+
+`apps/sample-service` is a Go HTTP service with an order-pricing endpoint,
+because a canary needs something to measure. `POST /api/v1/orders` validates a
+payload, applies coupon rules, computes shipping and tax, and returns 400 for
+malformed input, 422 for rules the caller could satisfy differently, and 201
+with the priced order.
+
+```bash
+curl -X POST localhost:8080/api/v1/orders -H 'Content-Type: application/json' \
+  -d '{"customer_id":"c-1","items":[{"sku":"widget","quantity":2,"unit_cents":500}]}'
+
+{"order_id":"ord_a1b2c3d4e5f6","customer_id":"c-1","subtotal_cents":1000,
+ "discount_cents":0,"shipping_cents":599,"tax_cents":139,"total_cents":1738}
+```
+
+It exports `http_requests_total`, `http_request_duration_seconds`, and the
+order counters at `/metrics`. Request metrics are labelled with the route the
+mux matched rather than the raw path, so unmatched traffic shares one series
+instead of minting one per URL. Scrapes are excluded from the request counters,
+because counting them would inflate the success rate the canary analysis reads.
+
+`FAILURE_RATE` makes the service fail that fraction of order requests. It is how
+the rollback demo produces a build that passes every probe and still needs to be
+stopped.
 
 ## Repository structure
 
 ```
-apps/
-  sample-service/         Go HTTP service with /health and /ready endpoints
-charts/
-  sample-service/         Helm chart: Deployment, Service, HPA, Ingress
-argocd/
-  applications/           ArgoCD Application manifests per environment
-.github/
-  workflows/
-    ci.yml                Build, test, lint, scan, push image
-    promote.yml           Promote staging image tag to production chart values
+apps/sample-service/      Go service: order pricing, metrics, graceful drain
+charts/sample-service/    Helm chart: Rollout (or Deployment), AnalysisTemplate,
+                          stable and canary Services, Ingress, HPA, PDB,
+                          ServiceMonitor
+argocd/applications/      ArgoCD Application per environment
+scripts/
+  smoke.sh                Post-deploy probe suite, used by CI and the gate
+  demo-canary-rollback.sh Reproduces an automated rollback on kind
+  demo-drift.sh           Makes drift and watches self-heal revert it
+docs/adr/                 Why the delivery works the way it does
+.github/workflows/
+  ci.yml                  Test, lint, smoke, chart validation, build, scan, sign
+  promote.yml             Opens the production promotion PR
+  post-promotion-smoke.yml  Probes the production canary, promotes or aborts
 ```
-
-## Prerequisites
-
-- Kubernetes cluster with ArgoCD installed (`kubectl apply -f https://raw.githubusercontent.com/argoproj/argo-cd/stable/manifests/install.yaml`)
-- `REGISTRY_USERNAME` and `REGISTRY_PASSWORD` secrets in GitHub repo settings
-- `IMAGE_REGISTRY` variable set to your container registry (e.g., `ghcr.io/jamespham`)
-
-## Deploying ArgoCD applications
-
-```bash
-kubectl apply -f argocd/applications/
-```
-
-ArgoCD will pick up the application definitions and begin syncing. Staging will auto-sync; production will show as `OutOfSync` until manually approved.
 
 ## Promoting to production
 
-Each environment is pinned to an image tag in its own values file, and the two move independently. Staging tracks `main` automatically. Production only changes when a promotion PR is merged.
+Each environment pins its own image tag and the two move independently.
 
-The flow for a single change:
+1. Push to main. CI builds, tags with the short SHA, and writes that tag into
+   `charts/sample-service/values-staging.yaml`. ArgoCD auto-syncs staging and
+   the staging canary runs.
+2. Run the **Promote to production** workflow with the staging tag. It opens a
+   PR that changes one line:
 
-1. Push to `main`. CI builds the image, tags it with the short commit SHA, and writes that tag into `charts/sample-service/values-staging.yaml`. ArgoCD auto-syncs staging.
-2. Verify staging once ArgoCD reports the staging Application as `Synced` and `Healthy`.
-3. Run the **Promote to production** workflow from the Actions tab and pass the staging image tag as its input. It opens a PR that bumps only the tag in `charts/sample-service/values-production.yaml`.
+   ```diff
+    image:
+      # Updated by .github/workflows/promote.yml, which opens a PR for review.
+   -  tag: "9f8e7d6"
+   +  tag: "a1b2c3d"
+   ```
 
-For example, promoting `a1b2c3d` (already live in staging) over the current production tag `9f8e7d6` produces this diff:
+3. Merge it. The production Application goes `OutOfSync`, and an operator
+   approves the sync in ArgoCD.
+4. The canary walks to 50% and pauses. The post-promotion smoke gate probes it
+   through the canary ingress header route, then promotes on success or aborts
+   on failure.
 
-```diff
- image:
-   # Updated by .github/workflows/promote.yml, which opens a PR for review.
--  tag: "9f8e7d6"
-+  tag: "a1b2c3d"
+Rolling back is reverting the merge. The previous ReplicaSet is still scaled up
+for `scaleDownDelaySeconds`, so it serves immediately.
+
+## Running it
+
+The chart installs either a Rollout or a plain Deployment. Set
+`rollout.enabled=false` on a cluster without the Argo Rollouts controller and
+the same pod spec ships behind a rolling update.
+
+```bash
+kubectl apply -f argocd/applications/          # both environments
+
+scripts/demo-canary-rollback.sh                # kind cluster, bad build, watch it abort
+scripts/demo-drift.sh sample-service-staging staging
 ```
-
-4. Merge the PR. ArgoCD sees the new desired state and marks the production Application `OutOfSync`. An operator approves the sync in ArgoCD to roll it out, so rolling back is just reverting the merge.
 
 ## Local development
 
 ```bash
-cd apps/sample-service
-go run main.go
+cd apps/sample-service/src
+go run .                                       # :8080
 
-# Runs on :8080
-curl http://localhost:8080/health
+scripts/smoke.sh http://localhost:8080         # the suite the promotion gate runs
+FAILURE_RATE=0.5 go run .                      # then watch the suite fail
 ```
 
 ## Running CI locally
 
 ```bash
-# Lint
-golangci-lint run ./...
+cd apps/sample-service/src && go test ./... -race -cover && golangci-lint run ./...
 
-# Tests
-go test ./... -v
+helm lint charts/sample-service
+helm template sample-service charts/sample-service \
+  -f charts/sample-service/values.yaml \
+  -f charts/sample-service/values-production.yaml \
+  | kubeconform -strict -kubernetes-version 1.29.0 -schema-location default \
+      -schema-location 'https://raw.githubusercontent.com/datreeio/CRDs-catalog/main/{{.Group}}/{{.ResourceKind}}_{{.ResourceAPIVersion}}.json'
 
-# Build image
-docker build -t sample-service:local apps/sample-service/
+shellcheck scripts/*.sh
 ```
+
+## Prerequisites
+
+- A Kubernetes cluster with ArgoCD, the Argo Rollouts controller, ingress-nginx,
+  and a Prometheus that scrapes ServiceMonitors
+- `IMAGE_REGISTRY` pointing at your container registry
+- For the live promotion gate: `KUBECONFIG_B64` and `ARGOCD_AUTH_TOKEN` secrets
+  and an `ARGOCD_SERVER` variable. Without them the gate reports what it would
+  have done and passes, so the workflow is readable on a repo with no cluster
+  attached.
 
 ## License
 
