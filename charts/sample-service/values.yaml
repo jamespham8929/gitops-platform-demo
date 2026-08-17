@@ -1,14 +1,72 @@
 replicaCount: 2
 
 image:
-  repository: ghcr.io/jamespham/sample-service
+  repository: ghcr.io/jamespham8929/sample-service
   pullPolicy: IfNotPresent
   tag: ""  # overridden by CI
+
+# Fraction of order requests the service fails on purpose, between 0 and 1. It
+# stays at 0 everywhere except the deliberately-bad image used to demonstrate an
+# automated canary rollback. See docs/canary-rollback.md.
+failureRate: "0"
 
 service:
   type: ClusterIP
   port: 80
   targetPort: 8080
+
+# Progressive delivery. With rollout.enabled the chart ships an Argo Rollouts
+# canary instead of a Deployment; set it to false to run on a cluster without
+# the Rollouts controller.
+rollout:
+  enabled: true
+  revisionHistoryLimit: 5
+  # A rollout that has not finished its steps in this many seconds is degraded.
+  # It has to exceed the total of every pause plus the analysis run, or a healthy
+  # rollout would time out on its own schedule.
+  progressDeadlineSeconds: 1800
+  # Keep the old ReplicaSet up briefly after a successful rollout so a rollback
+  # is instant, and after an aborted one so the failed pods can be inspected.
+  scaleDownDelaySeconds: 60
+  abortScaleDownDelaySeconds: 300
+  # Header that routes a request to the canary regardless of the current weight.
+  # .github/workflows/post-promotion-smoke.yml sends it.
+  canaryHeader:
+    name: X-Canary
+    value: always
+  steps:
+    - setWeight: 10
+    - pause: {duration: 2m}
+    - setWeight: 25
+    - pause: {duration: 5m}
+    - setWeight: 50
+    - pause: {duration: 5m}
+  analysis:
+    enabled: true
+    # Step 2 is the first pause, so analysis begins once the canary is actually
+    # taking traffic rather than while its pods are still starting.
+    startingStep: 2
+    prometheusAddress: http://kube-prometheus-stack-prometheus.monitoring.svc:9090
+    # Rate window for both queries. Wide enough to smooth a single slow request,
+    # narrow enough that a canary going bad is visible inside one interval.
+    window: 2m
+    interval: 1m
+    count: 10
+    initialDelay: 1m
+    # One breach aborts. The window already averages away single-request noise,
+    # so a second confirming measurement would only spend more traffic on a
+    # canary that is known to be failing.
+    failureLimit: 1
+    successRateThreshold: 0.98
+    latencyP95Seconds: 0.5
+
+serviceMonitor:
+  enabled: true
+  interval: 15s
+  scrapeTimeout: 10s
+  # Label the kube-prometheus-stack release selects on.
+  labels:
+    release: kube-prometheus-stack
 
 ingress:
   enabled: true
@@ -53,6 +111,11 @@ readinessProbe:
   initialDelaySeconds: 3
   periodSeconds: 5
 
+# The server drains for up to 15s on SIGTERM. Canary steps churn pods, so the
+# grace period has to outlast the drain or shutdown shows up as a success-rate
+# dip in the analysis.
+terminationGracePeriodSeconds: 30
+
 podDisruptionBudget:
   enabled: true
   minAvailable: 1
@@ -64,6 +127,7 @@ serviceAccount:
 podAnnotations:
   prometheus.io/scrape: "true"
   prometheus.io/port: "8080"
+  prometheus.io/path: "/metrics"
 
 env: []
 envFrom: []

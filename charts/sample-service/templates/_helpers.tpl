@@ -58,3 +58,68 @@ Name of the service account to use.
 {{- default "default" .Values.serviceAccount.name }}
 {{- end }}
 {{- end }}
+
+{{/*
+Name of the service that carries stable traffic. The ingress and the Rollout's
+stableService both point here, so it keeps the same name whether the workload is
+a Deployment or a Rollout.
+*/}}
+{{- define "sample-service.stableServiceName" -}}
+{{- include "sample-service.fullname" . }}
+{{- end }}
+
+{{/*
+Name of the canary service. Argo Rollouts rewrites this service's selector to
+the canary pod hash during a rollout, which is what lets the analysis query
+isolate canary traffic.
+*/}}
+{{- define "sample-service.canaryServiceName" -}}
+{{- printf "%s-canary" (include "sample-service.fullname" .) }}
+{{- end }}
+
+{{/*
+The pod spec, shared by the Deployment and the Rollout so the two paths cannot
+drift apart.
+*/}}
+{{- define "sample-service.podSpec" -}}
+serviceAccountName: {{ include "sample-service.serviceAccountName" . }}
+securityContext:
+  runAsNonRoot: true
+  runAsUser: 65532
+  seccompProfile:
+    type: RuntimeDefault
+terminationGracePeriodSeconds: {{ .Values.terminationGracePeriodSeconds }}
+containers:
+  - name: {{ .Chart.Name }}
+    image: "{{ .Values.image.repository }}:{{ .Values.image.tag | default .Chart.AppVersion }}"
+    imagePullPolicy: {{ .Values.image.pullPolicy }}
+    ports:
+      - name: http
+        containerPort: 8080
+        protocol: TCP
+    env:
+      - name: PORT
+        value: "8080"
+      - name: APP_VERSION
+        value: {{ .Values.image.tag | default .Chart.AppVersion | quote }}
+      - name: FAILURE_RATE
+        value: {{ .Values.failureRate | quote }}
+      {{- with .Values.env }}
+      {{- toYaml . | nindent 6 }}
+      {{- end }}
+    {{- with .Values.envFrom }}
+    envFrom:
+      {{- toYaml . | nindent 6 }}
+    {{- end }}
+    livenessProbe:
+      {{- toYaml .Values.livenessProbe | nindent 6 }}
+    readinessProbe:
+      {{- toYaml .Values.readinessProbe | nindent 6 }}
+    resources:
+      {{- toYaml .Values.resources | nindent 6 }}
+    securityContext:
+      allowPrivilegeEscalation: false
+      readOnlyRootFilesystem: true
+      capabilities:
+        drop: [ALL]
+{{- end }}

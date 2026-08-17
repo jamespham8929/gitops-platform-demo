@@ -5,7 +5,28 @@ image:
   # Updated automatically by .github/workflows/ci.yml after a successful build.
   tag: "a1b2c3d"
 
-replicaCount: 1
+replicaCount: 2
+
+# Staging runs the same canary strategy as production on a shorter clock. The
+# point of the shorter steps is fast feedback; the point of running it at all is
+# that the analysis query is exercised before production depends on it.
+rollout:
+  progressDeadlineSeconds: 600
+  steps:
+    - setWeight: 25
+    - pause: {duration: 1m}
+    - setWeight: 50
+    - pause: {duration: 2m}
+  analysis:
+    count: 4
+    interval: 30s
+    window: 1m
+    initialDelay: 30s
+    # Staging traffic is thin, so a single bad measurement is more likely to be
+    # noise than it is in production.
+    failureLimit: 2
+    successRateThreshold: 0.95
+    latencyP95Seconds: 1.0
 
 ingress:
   hosts:
@@ -18,7 +39,8 @@ ingress:
       hosts:
         - sample-service.staging.example.com
 
-# Staging runs a single replica with autoscaling off to keep the cluster small.
+# Autoscaling is off in staging so the canary weights map to a predictable pod
+# count instead of moving under the analysis.
 autoscaling:
   enabled: false
 

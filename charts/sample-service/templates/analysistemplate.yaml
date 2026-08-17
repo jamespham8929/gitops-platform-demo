@@ -1,0 +1,58 @@
+{{- if and .Values.rollout.enabled .Values.rollout.analysis.enabled }}
+# The gate that makes the canary self-cancelling. Both metrics run on an
+# interval for the life of the rollout; `failureLimit` measurements over
+# threshold abort the Rollout, which shifts all traffic back to the stable
+# ReplicaSet.
+#
+# Queries select on the canary service label rather than the pod hash, because
+# Argo Rollouts keeps the canary service's selector pinned to the canary pods and
+# prometheus-operator stamps a `service` label on every sample it scrapes
+# through that service.
+apiVersion: argoproj.io/v1alpha1
+kind: AnalysisTemplate
+metadata:
+  name: {{ include "sample-service.fullname" . }}-canary
+  labels:
+    {{- include "sample-service.labels" . | nindent 4 }}
+spec:
+  args:
+    - name: canary-service
+    - name: namespace
+  metrics:
+    - name: success-rate
+      # No samples means no evidence either way. The rollout's
+      # progressDeadlineSeconds bounds how long a silent canary can sit here.
+      successCondition: len(result) == 0 || result[0] >= {{ .Values.rollout.analysis.successRateThreshold }}
+      interval: {{ .Values.rollout.analysis.interval }}
+      count: {{ .Values.rollout.analysis.count }}
+      initialDelay: {{ .Values.rollout.analysis.initialDelay }}
+      failureLimit: {{ .Values.rollout.analysis.failureLimit }}
+      provider:
+        prometheus:
+          address: {{ .Values.rollout.analysis.prometheusAddress }}
+          query: |
+            sum(rate(http_requests_total{
+              service="{{ "{{args.canary-service}}" }}",
+              namespace="{{ "{{args.namespace}}" }}",
+              status!~"5.."
+            }[{{ .Values.rollout.analysis.window }}]))
+            /
+            sum(rate(http_requests_total{
+              service="{{ "{{args.canary-service}}" }}",
+              namespace="{{ "{{args.namespace}}" }}"
+            }[{{ .Values.rollout.analysis.window }}]))
+    - name: latency-p95
+      successCondition: len(result) == 0 || result[0] <= {{ .Values.rollout.analysis.latencyP95Seconds }}
+      interval: {{ .Values.rollout.analysis.interval }}
+      count: {{ .Values.rollout.analysis.count }}
+      initialDelay: {{ .Values.rollout.analysis.initialDelay }}
+      failureLimit: {{ .Values.rollout.analysis.failureLimit }}
+      provider:
+        prometheus:
+          address: {{ .Values.rollout.analysis.prometheusAddress }}
+          query: |
+            histogram_quantile(0.95, sum(rate(http_request_duration_seconds_bucket{
+              service="{{ "{{args.canary-service}}" }}",
+              namespace="{{ "{{args.namespace}}" }}"
+            }[{{ .Values.rollout.analysis.window }}])) by (le))
+{{- end }}

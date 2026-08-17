@@ -1,3 +1,7 @@
+{{- if not .Values.rollout.enabled }}
+# Plain Deployment, used when Argo Rollouts is not installed on the target
+# cluster. It ships the same pod spec as the Rollout, so switching between the
+# two changes only the delivery strategy.
 apiVersion: apps/v1
 kind: Deployment
 metadata:
@@ -22,40 +26,5 @@ spec:
       annotations:
         {{- toYaml .Values.podAnnotations | nindent 8 }}
     spec:
-      serviceAccountName: {{ include "sample-service.serviceAccountName" . }}
-      securityContext:
-        runAsNonRoot: true
-        runAsUser: 65532
-        seccompProfile:
-          type: RuntimeDefault
-      containers:
-        - name: {{ .Chart.Name }}
-          image: "{{ .Values.image.repository }}:{{ .Values.image.tag | default .Chart.AppVersion }}"
-          imagePullPolicy: {{ .Values.image.pullPolicy }}
-          ports:
-            - name: http
-              containerPort: 8080
-              protocol: TCP
-          env:
-            - name: PORT
-              value: "8080"
-            - name: APP_VERSION
-              value: {{ .Values.image.tag | default .Chart.AppVersion | quote }}
-            {{- with .Values.env }}
-            {{- toYaml . | nindent 12 }}
-            {{- end }}
-          {{- with .Values.envFrom }}
-          envFrom:
-            {{- toYaml . | nindent 12 }}
-          {{- end }}
-          livenessProbe:
-            {{- toYaml .Values.livenessProbe | nindent 12 }}
-          readinessProbe:
-            {{- toYaml .Values.readinessProbe | nindent 12 }}
-          resources:
-            {{- toYaml .Values.resources | nindent 12 }}
-          securityContext:
-            allowPrivilegeEscalation: false
-            readOnlyRootFilesystem: true
-            capabilities:
-              drop: [ALL]
+      {{- include "sample-service.podSpec" . | nindent 6 }}
+{{- end }}

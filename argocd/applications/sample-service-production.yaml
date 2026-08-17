@@ -8,7 +8,7 @@ metadata:
 spec:
   project: default
   source:
-    repoURL: https://github.com/jamespham/gitops-platform-demo
+    repoURL: https://github.com/jamespham8929/gitops-platform-demo
     targetRevision: HEAD
     path: charts/sample-service
     helm:
@@ -18,6 +18,9 @@ spec:
   destination:
     server: https://kubernetes.default.svc
     namespace: production
+  # No automated block at all: production neither auto-syncs nor self-heals.
+  # Drift shows up as OutOfSync for a human to judge instead of being reverted
+  # under them mid-incident. See docs/drift-detection.md.
   syncPolicy:
     syncOptions:
       - CreateNamespace=true
@@ -28,4 +31,3 @@ spec:
         duration: 10s
         factor: 2
         maxDuration: 5m
-    # No automated sync for production — requires explicit ArgoCD approval

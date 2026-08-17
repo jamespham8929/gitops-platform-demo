@@ -1,0 +1,64 @@
+{{- if .Values.rollout.enabled }}
+# Canary Rollout. Traffic moves in weighted steps and a background analysis run
+# watches the canary's own success rate and latency; if either breaches its
+# threshold the rollout aborts and traffic returns to the stable ReplicaSet
+# without anyone being paged.
+apiVersion: argoproj.io/v1alpha1
+kind: Rollout
+metadata:
+  name: {{ include "sample-service.fullname" . }}
+  labels:
+    {{- include "sample-service.labels" . | nindent 4 }}
+spec:
+  {{- if not .Values.autoscaling.enabled }}
+  replicas: {{ .Values.replicaCount }}
+  {{- end }}
+  revisionHistoryLimit: {{ .Values.rollout.revisionHistoryLimit }}
+  progressDeadlineSeconds: {{ .Values.rollout.progressDeadlineSeconds }}
+  selector:
+    matchLabels:
+      {{- include "sample-service.selectorLabels" . | nindent 6 }}
+  template:
+    metadata:
+      labels:
+        {{- include "sample-service.selectorLabels" . | nindent 8 }}
+      annotations:
+        {{- toYaml .Values.podAnnotations | nindent 8 }}
+    spec:
+      {{- include "sample-service.podSpec" . | nindent 6 }}
+  strategy:
+    canary:
+      canaryService: {{ include "sample-service.canaryServiceName" . }}
+      stableService: {{ include "sample-service.stableServiceName" . }}
+      scaleDownDelaySeconds: {{ .Values.rollout.scaleDownDelaySeconds }}
+      # An aborted rollout keeps the failed ReplicaSet around for a while so its
+      # pods and logs can still be inspected after traffic has shifted back.
+      abortScaleDownDelaySeconds: {{ .Values.rollout.abortScaleDownDelaySeconds }}
+      {{- if .Values.ingress.enabled }}
+      trafficRouting:
+        nginx:
+          stableIngress: {{ include "sample-service.fullname" . }}
+          # Rollouts copies the stable ingress into a canary ingress carrying
+          # these annotations. The header rule lets the promotion gate address
+          # the canary pods directly instead of hoping the weighted split sends
+          # its probes to the new build.
+          additionalIngressAnnotations:
+            canary-by-header: {{ .Values.rollout.canaryHeader.name }}
+            canary-by-header-value: {{ .Values.rollout.canaryHeader.value }}
+      {{- end }}
+      {{- if .Values.rollout.analysis.enabled }}
+      analysis:
+        # Background analysis: it starts once real traffic is on the canary and
+        # runs for the rest of the rollout rather than only at one checkpoint.
+        startingStep: {{ .Values.rollout.analysis.startingStep }}
+        templates:
+          - templateName: {{ include "sample-service.fullname" . }}-canary
+        args:
+          - name: canary-service
+            value: {{ include "sample-service.canaryServiceName" . }}
+          - name: namespace
+            value: {{ .Release.Namespace }}
+      {{- end }}
+      steps:
+        {{- toYaml .Values.rollout.steps | nindent 8 }}
+{{- end }}

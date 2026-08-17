@@ -7,6 +7,27 @@ image:
 
 replicaCount: 3
 
+# Production spends longer at each weight and stops at 50% for a human. The
+# analysis can abort the rollout on its own at any point before that; the manual
+# gate only decides whether to finish it.
+rollout:
+  progressDeadlineSeconds: 3600
+  abortScaleDownDelaySeconds: 900
+  steps:
+    - setWeight: 5
+    - pause: {duration: 5m}
+    - setWeight: 20
+    - pause: {duration: 10m}
+    - setWeight: 50
+    - pause: {}
+  analysis:
+    count: 25
+    interval: 1m
+    window: 2m
+    failureLimit: 1
+    successRateThreshold: 0.99
+    latencyP95Seconds: 0.4
+
 ingress:
   hosts:
     - host: sample-service.example.com

@@ -1,0 +1,37 @@
+apiVersion: v1
+kind: Service
+metadata:
+  name: {{ include "sample-service.stableServiceName" . }}
+  labels:
+    {{- include "sample-service.labels" . | nindent 4 }}
+spec:
+  type: {{ .Values.service.type }}
+  ports:
+    - port: {{ .Values.service.port }}
+      targetPort: {{ .Values.service.targetPort }}
+      protocol: TCP
+      name: http
+  selector:
+    {{- include "sample-service.selectorLabels" . | nindent 4 }}
+{{- if .Values.rollout.enabled }}
+---
+# Canary service. The selector below is the chart's starting point only: during a
+# rollout Argo Rollouts adds the canary pod-template hash to it, so anything
+# scraping or probing this service sees canary pods alone.
+apiVersion: v1
+kind: Service
+metadata:
+  name: {{ include "sample-service.canaryServiceName" . }}
+  labels:
+    {{- include "sample-service.labels" . | nindent 4 }}
+    app.kubernetes.io/component: canary
+spec:
+  type: {{ .Values.service.type }}
+  ports:
+    - port: {{ .Values.service.port }}
+      targetPort: {{ .Values.service.targetPort }}
+      protocol: TCP
+      name: http
+  selector:
+    {{- include "sample-service.selectorLabels" . | nindent 4 }}
+{{- end }}
