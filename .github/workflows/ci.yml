@@ -6,11 +6,15 @@ on:
     paths:
       - "apps/sample-service/**"
       - "charts/sample-service/**"
+      - "scripts/**"
+      - ".github/workflows/ci.yml"
   pull_request:
     branches: [main]
     paths:
       - "apps/sample-service/**"
       - "charts/sample-service/**"
+      - "scripts/**"
+      - ".github/workflows/ci.yml"
 
 env:
   REGISTRY: ghcr.io
@@ -28,12 +32,12 @@ jobs:
       - uses: actions/setup-go@v5
         with:
           go-version: "1.22"
-          cache: true
+          cache-dependency-path: apps/sample-service/src/go.sum
       - name: Run tests
         run: go test ./... -v -race -coverprofile=coverage.out
       - name: Enforce coverage threshold
         env:
-          THRESHOLD: "50"
+          THRESHOLD: "80"
         run: |
           total=$(go tool cover -func=coverage.out | awk '/^total:/ {print $3}' | tr -d '%')
           echo "Total coverage: ${total}% (threshold ${THRESHOLD}%)"
@@ -56,6 +60,7 @@ jobs:
       - uses: actions/setup-go@v5
         with:
           go-version: "1.22"
+          cache-dependency-path: apps/sample-service/src/go.sum
       - uses: golangci/golangci-lint-action@v4
         with:
           working-directory: apps/sample-service/src
@@ -63,6 +68,10 @@ jobs:
   helm:
     name: Helm chart
     runs-on: ubuntu-latest
+    env:
+      # The chart renders Argo Rollouts and prometheus-operator CRs, so schema
+      # validation needs their schemas as well as the built-in Kubernetes ones.
+      CRD_SCHEMAS: "https://raw.githubusercontent.com/datreeio/CRDs-catalog/main/{{.Group}}/{{.ResourceKind}}_{{.ResourceAPIVersion}}.json"
     steps:
       - uses: actions/checkout@v4
       - uses: azure/setup-helm@v4
@@ -70,20 +79,13 @@ jobs:
           version: v3.14.4
       - name: Lint chart
         run: helm lint charts/sample-service
-      - name: Smoke render templates
-        run: helm template sample-service charts/sample-service > /dev/null
       - name: Install kubeconform
         run: |
           curl -sSL -o kubeconform.tar.gz \
             https://github.com/yannh/kubeconform/releases/download/v0.6.7/kubeconform-linux-amd64.tar.gz
           tar xzf kubeconform.tar.gz kubeconform
           sudo install kubeconform /usr/local/bin/
-      - name: Validate rendered manifests against Kubernetes schema
-        run: |
-          helm template sample-service charts/sample-service \
-            | kubeconform -strict -summary -verbose \
-                -kubernetes-version 1.29.0 -schema-location default
-      - name: Validate environment overlays against Kubernetes schema
+      - name: Validate environment overlays against Kubernetes and CRD schemas
         run: |
           for env in staging production; do
             echo "Validating $env overlay"
@@ -91,13 +93,76 @@ jobs:
               -f charts/sample-service/values.yaml \
               -f charts/sample-service/values-$env.yaml \
               | kubeconform -strict -summary \
-                  -kubernetes-version 1.29.0 -schema-location default
+                  -kubernetes-version 1.29.0 \
+                  -schema-location default \
+                  -schema-location "$CRD_SCHEMAS"
           done
+      - name: Validate the Deployment fallback path
+        run: |
+          helm template sample-service charts/sample-service \
+            --set rollout.enabled=false --set serviceMonitor.enabled=false \
+            | kubeconform -strict -summary \
+                -kubernetes-version 1.29.0 -schema-location default
+      - name: Check the canary analysis reads a metric the service exports
+        run: |
+          # A rollout gated on a metric name the service never emits would sit at
+          # "no data" and pass every step, so tie the two together in CI.
+          queries=$(helm template sample-service charts/sample-service \
+            -f charts/sample-service/values.yaml \
+            -f charts/sample-service/values-production.yaml)
+          for metric in http_requests_total http_request_duration_seconds_bucket; do
+            grep -q "$metric" <<< "$queries" \
+              || { echo "analysis template does not query $metric"; exit 1; }
+            grep -rq "${metric%_bucket}" apps/sample-service/src/metrics.go \
+              || { echo "service does not export $metric"; exit 1; }
+          done
+          echo "Analysis queries and exported metrics agree"
+
+  smoke:
+    name: Smoke test the built binary
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-go@v5
+        with:
+          go-version: "1.22"
+          cache-dependency-path: apps/sample-service/src/go.sum
+      - name: Build and run the service
+        run: |
+          go build -C apps/sample-service/src -o "$RUNNER_TEMP/sample-service" .
+          APP_VERSION=ci PORT=8080 "$RUNNER_TEMP/sample-service" &
+          for _ in $(seq 1 30); do
+            curl -sf http://127.0.0.1:8080/health > /dev/null && break
+            sleep 1
+          done
+      - name: Run the smoke suite the promotion gate uses
+        run: scripts/smoke.sh http://127.0.0.1:8080 ci
+      - name: Confirm the suite fails on a bad build
+        run: |
+          # The smoke gate is only worth having if it actually rejects something.
+          FAILURE_RATE=1 APP_VERSION=ci PORT=8081 "$RUNNER_TEMP/sample-service" &
+          for _ in $(seq 1 30); do
+            curl -sf http://127.0.0.1:8081/health > /dev/null && break
+            sleep 1
+          done
+          if scripts/smoke.sh http://127.0.0.1:8081 ci; then
+            echo "smoke suite passed a build that fails every order request"
+            exit 1
+          fi
+          echo "Smoke suite correctly rejected the faulty build"
+
+  shell:
+    name: Shell lint
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Run shellcheck
+        run: shellcheck scripts/*.sh
 
   build-and-push:
     name: Build and push image
     runs-on: ubuntu-latest
-    needs: [test, lint]
+    needs: [test, lint, smoke]
     if: github.ref == 'refs/heads/main'
     permissions:
       contents: write
@@ -130,7 +195,6 @@ jobs:
           push: true
           tags: ${{ steps.meta.outputs.tags }}
           labels: ${{ steps.meta.outputs.labels }}
-          build-args: APP_VERSION=${{ steps.meta.outputs.version }}
           cache-from: type=gha
           cache-to: type=gha,mode=max
 

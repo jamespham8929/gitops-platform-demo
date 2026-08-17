@@ -1,0 +1,140 @@
+name: Post-promotion smoke gate
+
+# Runs after a promotion PR lands on main. ArgoCD syncs the new tag into
+# production as a canary; this workflow waits for that canary to be taking
+# traffic, probes it through the canary ingress, and decides whether it finishes
+# the rollout or aborts it. A promotion that syncs cleanly but breaks behaviour
+# never reaches 100% of traffic.
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - "charts/sample-service/values-production.yaml"
+  workflow_dispatch:
+    inputs:
+      base_url:
+        description: "Override the production URL to probe"
+        required: false
+        type: string
+
+permissions:
+  contents: read
+
+env:
+  APP_NAME: sample-service-production
+  ROLLOUT_NAME: sample-service
+  NAMESPACE: production
+  BASE_URL: ${{ inputs.base_url || 'https://sample-service.example.com' }}
+
+jobs:
+  smoke:
+    name: Probe the canary and decide
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Read the promoted tag
+        id: tag
+        run: |
+          tag=$(grep -E '^\s+tag:' charts/sample-service/values-production.yaml \
+                | head -1 | sed 's/.*tag:[[:space:]]*"\?\([^"]*\)"\?.*/\1/')
+          echo "value=$tag" >> "$GITHUB_OUTPUT"
+          echo "Promoted tag: $tag"
+
+      # This repo has no cluster attached, so the job reports what it would have
+      # done rather than failing on missing credentials. Populate the secrets and
+      # the gate becomes live with no other change.
+      - name: Check cluster credentials
+        id: preflight
+        env:
+          KUBECONFIG_B64: ${{ secrets.KUBECONFIG_B64 }}
+          ARGOCD_AUTH_TOKEN: ${{ secrets.ARGOCD_AUTH_TOKEN }}
+        run: |
+          if [[ -n "$KUBECONFIG_B64" && -n "$ARGOCD_AUTH_TOKEN" ]]; then
+            echo "configured=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "configured=false" >> "$GITHUB_OUTPUT"
+            echo "::notice::KUBECONFIG_B64 and ARGOCD_AUTH_TOKEN are unset, skipping the live gate."
+          fi
+
+      - name: Set up kubectl and the Argo Rollouts plugin
+        if: steps.preflight.outputs.configured == 'true'
+        env:
+          KUBECONFIG_B64: ${{ secrets.KUBECONFIG_B64 }}
+        run: |
+          mkdir -p "$HOME/.kube"
+          echo "$KUBECONFIG_B64" | base64 -d > "$HOME/.kube/config"
+          chmod 600 "$HOME/.kube/config"
+          curl -sSL -o kubectl-argo-rollouts \
+            https://github.com/argoproj/argo-rollouts/releases/latest/download/kubectl-argo-rollouts-linux-amd64
+          sudo install kubectl-argo-rollouts /usr/local/bin/
+          curl -sSL -o argocd https://github.com/argoproj/argo-cd/releases/latest/download/argocd-linux-amd64
+          sudo install argocd /usr/local/bin/
+
+      - name: Wait for ArgoCD to sync the promoted tag
+        if: steps.preflight.outputs.configured == 'true'
+        env:
+          ARGOCD_SERVER: ${{ vars.ARGOCD_SERVER }}
+          ARGOCD_AUTH_TOKEN: ${{ secrets.ARGOCD_AUTH_TOKEN }}
+        run: argocd app wait "$APP_NAME" --sync --timeout 600
+
+      - name: Wait for the canary to take traffic
+        if: steps.preflight.outputs.configured == 'true'
+        run: |
+          # The canary is worth probing once it has moved past its first weight
+          # step. Paused means it is serving; Degraded means the analysis already
+          # aborted it and there is nothing left to test.
+          for _ in $(seq 1 60); do
+            phase=$(kubectl -n "$NAMESPACE" get rollout "$ROLLOUT_NAME" \
+                     -o jsonpath='{.status.phase}')
+            echo "rollout phase: $phase"
+            case "$phase" in
+              Paused) exit 0 ;;
+              Degraded) echo "::error::Canary analysis aborted the rollout before the smoke gate ran."; exit 1 ;;
+              Healthy) echo "::error::Rollout finished without pausing; check the step configuration."; exit 1 ;;
+            esac
+            sleep 10
+          done
+          echo "::error::Timed out waiting for the canary to pause."
+          exit 1
+
+      - name: Smoke the canary
+        id: smoke
+        if: steps.preflight.outputs.configured == 'true'
+        continue-on-error: true
+        env:
+          SMOKE_HEADER: "X-Canary: always"
+        run: scripts/smoke.sh "$BASE_URL" "${{ steps.tag.outputs.value }}"
+
+      - name: Abort the rollout on a failed smoke test
+        if: steps.preflight.outputs.configured == 'true' && steps.smoke.outcome == 'failure'
+        run: |
+          kubectl argo rollouts abort "$ROLLOUT_NAME" -n "$NAMESPACE"
+          echo "::error::Smoke test failed; rollout aborted and traffic returned to the stable build."
+          exit 1
+
+      - name: Finish the rollout
+        if: steps.preflight.outputs.configured == 'true' && steps.smoke.outcome == 'success'
+        run: |
+          # The human gate is the promotion PR. Past that point the canary
+          # advances on evidence: the analysis run and this smoke suite.
+          kubectl argo rollouts promote "$ROLLOUT_NAME" -n "$NAMESPACE"
+          kubectl argo rollouts status "$ROLLOUT_NAME" -n "$NAMESPACE" --timeout 10m
+
+      - name: Report what the gate would have done
+        if: steps.preflight.outputs.configured != 'true'
+        run: |
+          {
+            echo "### Post-promotion smoke gate"
+            echo
+            echo "Promoted tag: \`${{ steps.tag.outputs.value }}\`"
+            echo
+            echo "No cluster credentials are configured, so the live gate was skipped."
+            echo "With \`KUBECONFIG_B64\` and \`ARGOCD_AUTH_TOKEN\` set it would:"
+            echo
+            echo "1. Wait for \`$APP_NAME\` to report Synced."
+            echo "2. Wait for the canary Rollout to pause with traffic on it."
+            echo "3. Run \`scripts/smoke.sh\` against the canary ingress."
+            echo "4. Promote on success, abort on failure."
+          } >> "$GITHUB_STEP_SUMMARY"
