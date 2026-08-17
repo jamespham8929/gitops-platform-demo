@@ -37,8 +37,9 @@ jobs:
       - name: Read the promoted tag
         id: tag
         run: |
-          tag=$(grep -E '^\s+tag:' charts/sample-service/values-production.yaml \
-                | head -1 | sed 's/.*tag:[[:space:]]*"\?\([^"]*\)"\?.*/\1/')
+          tag=$(grep -E '^[[:space:]]+tag:' charts/sample-service/values-production.yaml \
+                | head -1 | tr -d '"' | awk '{print $2}')
+          [[ -n "$tag" ]] || { echo "could not read the production image tag"; exit 1; }
           echo "value=$tag" >> "$GITHUB_OUTPUT"
           echo "Promoted tag: $tag"
 
