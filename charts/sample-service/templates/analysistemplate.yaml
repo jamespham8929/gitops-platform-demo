@@ -34,7 +34,7 @@ spec:
             sum(rate(http_requests_total{
               service="{{ "{{args.canary-service}}" }}",
               namespace="{{ "{{args.namespace}}" }}",
-              status!~"5.."
+              code!~"5.."
             }[{{ .Values.rollout.analysis.window }}]))
             /
             sum(rate(http_requests_total{

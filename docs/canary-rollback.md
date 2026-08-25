@@ -35,7 +35,7 @@ The canary takes 25% of traffic. The background AnalysisRun starts after the
 first step and queries Prometheus every 30 seconds:
 
 ```promql
-sum(rate(http_requests_total{service="sample-service-canary",namespace="demo",status!~"5.."}[1m]))
+sum(rate(http_requests_total{service="sample-service-canary",namespace="demo",code!~"5.."}[1m]))
 /
 sum(rate(http_requests_total{service="sample-service-canary",namespace="demo"}[1m]))
 ```

@@ -34,8 +34,8 @@ func newMetrics() *metrics {
 		registry: reg,
 		requestsTotal: prometheus.NewCounterVec(prometheus.CounterOpts{
 			Name: "http_requests_total",
-			Help: "Total HTTP requests by route and response status.",
-		}, []string{"method", "route", "status"}),
+			Help: "Total HTTP requests by route and response code.",
+		}, []string{"method", "route", "code"}),
 		requestDuration: prometheus.NewHistogramVec(prometheus.HistogramOpts{
 			Name:    "http_request_duration_seconds",
 			Help:    "HTTP request latency by route.",

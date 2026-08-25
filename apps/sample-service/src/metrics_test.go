@@ -41,7 +41,7 @@ func TestMetricsEndpointExcludesItself(t *testing.T) {
 	rec := doRequest(t, h, http.MethodGet, "/metrics", "")
 
 	body := rec.Body.String()
-	if !strings.Contains(body, `http_requests_total{method="GET",route="/health",status="200"} 1`) {
+	if !strings.Contains(body, `http_requests_total{code="200",method="GET",route="/health"} 1`) {
 		t.Errorf("expected the health request in the exposition, got:\n%s", body)
 	}
 	if strings.Contains(body, `route="/metrics"`) {

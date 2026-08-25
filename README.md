@@ -41,7 +41,7 @@ The Rollout runs a background AnalysisRun from the first traffic step. It
 queries Prometheus on an interval and aborts on a breach:
 
 ```promql
-sum(rate(http_requests_total{service="sample-service-canary",namespace="production",status!~"5.."}[2m]))
+sum(rate(http_requests_total{service="sample-service-canary",namespace="production",code!~"5.."}[2m]))
 /
 sum(rate(http_requests_total{service="sample-service-canary",namespace="production"}[2m]))
 ```
