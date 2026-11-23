@@ -177,10 +177,17 @@ jobs:
       contents: read
       packages: write
     outputs:
-      image_tag: ${{ steps.meta.outputs.version }}
+      image_tag: ${{ steps.tag.outputs.value }}
       digest: ${{ steps.build.outputs.digest }}
     steps:
       - uses: actions/checkout@v7
+
+      # Staging must point at the commit tag, which never moves. metadata-action's
+      # version output prefers the branch tag, and "main" would leave the values
+      # file unchanged on every build, so ArgoCD would never roll anything out.
+      - name: Pick the immutable tag
+        id: tag
+        run: echo "value=${GITHUB_SHA::7}" >> "$GITHUB_OUTPUT"
 
       # The default docker driver cannot export a build cache, so cache-to
       # type=gha fails without a buildx builder of its own.
