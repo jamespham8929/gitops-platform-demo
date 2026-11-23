@@ -16,17 +16,23 @@ jobs:
       contents: write
       pull-requests: write
     steps:
-      - uses: actions/checkout@v4
-        with:
-          token: ${{ secrets.GITHUB_TOKEN }}
+      - uses: actions/checkout@v7
 
       - name: Update production values file
+        env:
+          # Read the input from the environment, not by pasting it into the
+          # script, so a crafted tag cannot run shell commands.
+          IMAGE_TAG: ${{ inputs.image_tag }}
         run: |
-          sed -i "s/tag:.*/tag: \"${{ github.event.inputs.image_tag }}\"/" \
+          if [[ ! "$IMAGE_TAG" =~ ^[A-Za-z0-9._-]{1,128}$ ]]; then
+            echo "::error::'$IMAGE_TAG' is not a valid image tag"
+            exit 1
+          fi
+          sed -i -E "s/^([[:space:]]+)tag:.*/\1tag: \"${IMAGE_TAG}\"/" \
             charts/sample-service/values-production.yaml
 
       - name: Create pull request
-        uses: peter-evans/create-pull-request@v6
+        uses: peter-evans/create-pull-request@v8
         with:
           token: ${{ secrets.GITHUB_TOKEN }}
           branch: promote/${{ github.event.inputs.image_tag }}
