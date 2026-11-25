@@ -35,6 +35,7 @@ const (
 	reasonCouponMinimum = "coupon_minimum_not_met"
 	reasonOrderTooLarge = "order_too_large"
 	reasonInjected      = "injected_fault"
+	reasonUpstream      = "upstream_unavailable"
 )
 
 // coupon is a percentage discount that only applies above a subtotal floor.
@@ -54,7 +55,7 @@ var coupons = map[string]coupon{
 var rejectionReasons = []string{
 	reasonMalformed, reasonNoItems, reasonTooManyItems, reasonBadQuantity,
 	reasonBadPrice, reasonMissingSKU, reasonUnknownCoupon, reasonCouponMinimum,
-	reasonOrderTooLarge, reasonInjected,
+	reasonOrderTooLarge, reasonInjected, reasonUpstream,
 }
 
 type lineItem struct {
@@ -190,6 +191,19 @@ func (s *server) orderHandler(w http.ResponseWriter, r *http.Request) {
 		}
 		writeJSON(w, http.StatusInternalServerError, map[string]string{"error": "internal error"})
 		return
+	}
+
+	// A valid order goes to the upstream before it is accepted here. An
+	// upstream failure is this service's failure too, so it answers 502.
+	if s.upstream != nil {
+		if err := s.upstream.placeOrder(r.Context(), req); err != nil {
+			s.metrics.ordersRejected.WithLabelValues(reasonUpstream).Inc()
+			writeJSON(w, http.StatusBadGateway, map[string]string{
+				"error":  err.Error(),
+				"reason": reasonUpstream,
+			})
+			return
+		}
 	}
 
 	s.metrics.ordersCreated.Inc()

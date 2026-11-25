@@ -24,6 +24,7 @@ const metricsPattern = "GET /metrics"
 type server struct {
 	metrics   *metrics
 	faults    *faultInjector
+	upstream  *upstreamClient
 	nextID    func() string
 	version   string
 	startTime time.Time
@@ -65,6 +66,12 @@ func main() {
 
 	faultRate := faultRateFromEnv()
 	srv := newServer(os.Getenv("APP_VERSION"), newFaultInjector(faultRate))
+	up, err := upstreamFromEnv(srv.metrics)
+	if err != nil {
+		slog.Error("bad upstream config", "error", err)
+		os.Exit(1)
+	}
+	srv.upstream = up
 
 	httpServer := &http.Server{
 		Addr:         ":" + port,

@@ -89,6 +89,17 @@ because counting them would inflate the success rate the canary analysis reads.
 the rollback demo produces a build that passes every probe and still needs to be
 stopped.
 
+`UPSTREAM_URL` makes the service pass each valid order on to another copy of
+itself before it answers. If the upstream fails or times out
+(`UPSTREAM_TIMEOUT`, 2s by default), the order fails with a 502. Calls to the
+upstream are counted in `upstream_requests_total` and timed in
+`upstream_request_duration_seconds`, labelled with `UPSTREAM_NAME`. Several
+copies can then form a call chain, such as frontend to checkout to inventory.
+A fault in inventory shows up in checkout's upstream metrics, even when
+inventory's own metrics look fine. platform-mcp's incident gym runs the
+service this way. The chart's `extraContainers` value adds a sidecar to every
+pod, which the gym uses for the tools chaos-operator's faults need.
+
 ## Repository structure
 
 ```

@@ -131,3 +131,8 @@ podAnnotations:
 
 env: []
 envFrom: []
+
+# Sidecars added to every pod. platform-mcp's incident gym adds one with tc
+# and stress-ng, so chaos-operator can slow a pod down. Set
+# UPSTREAM_URL in env to make this service call another copy of itself.
+extraContainers: []

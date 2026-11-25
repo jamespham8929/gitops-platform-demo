@@ -21,6 +21,9 @@ type metrics struct {
 	ordersCreated   prometheus.Counter
 	ordersRejected  *prometheus.CounterVec
 	orderValueCents prometheus.Histogram
+	// The upstream series stay empty unless UPSTREAM_URL is set.
+	upstreamRequests *prometheus.CounterVec
+	upstreamDuration *prometheus.HistogramVec
 }
 
 func newMetrics() *metrics {
@@ -54,6 +57,15 @@ func newMetrics() *metrics {
 			Help:    "Total value of accepted orders, in cents.",
 			Buckets: prometheus.ExponentialBuckets(100, 3, 8),
 		}),
+		upstreamRequests: prometheus.NewCounterVec(prometheus.CounterOpts{
+			Name: "upstream_requests_total",
+			Help: "Orders sent to the upstream service, by upstream and response code.",
+		}, []string{"upstream", "code"}),
+		upstreamDuration: prometheus.NewHistogramVec(prometheus.HistogramOpts{
+			Name:    "upstream_request_duration_seconds",
+			Help:    "Time spent waiting for the upstream service.",
+			Buckets: []float64{0.001, 0.005, 0.01, 0.025, 0.05, 0.1, 0.25, 0.5, 1, 2.5},
+		}, []string{"upstream"}),
 	}
 
 	// Publish every rejection reason at zero so a query for a reason that has
@@ -68,6 +80,8 @@ func newMetrics() *metrics {
 		m.ordersCreated,
 		m.ordersRejected,
 		m.orderValueCents,
+		m.upstreamRequests,
+		m.upstreamDuration,
 	)
 	return m
 }

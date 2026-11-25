@@ -122,4 +122,7 @@ containers:
       readOnlyRootFilesystem: true
       capabilities:
         drop: [ALL]
+  {{- with .Values.extraContainers }}
+  {{- toYaml . | nindent 2 }}
+  {{- end }}
 {{- end }}
