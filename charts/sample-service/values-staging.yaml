@@ -3,7 +3,7 @@
 
 image:
   # Updated automatically by .github/workflows/ci.yml after a successful build.
-  tag: "4b46535"
+  tag: "f05735e"
 
 replicaCount: 2
 
