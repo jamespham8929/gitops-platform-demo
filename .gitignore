@@ -9,3 +9,6 @@ vendor/
 .env
 .env.*
 .DS_Store
+
+# The binary `go build` leaves next to the source.
+/apps/sample-service/src/sample-service
